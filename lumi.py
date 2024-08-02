@@ -4,8 +4,43 @@ from tkinter.filedialog import askopenfilename, asksaveasfilename
 from tkinter.messagebox import askokcancel, showerror
 from tkinter.simpledialog import askstring
 from serial import Serial
+from tkinter.colorchooser import askcolor
 import pickle
 import threading
+
+class Polygon:
+    def __init__(self, polygon, cmd, offCmd, color="white"):
+        self.polygon=polygon
+        self.cmd=cmd
+        self.offCmd=offCmd
+        self.figure=None
+        self.color=color
+        self.state=False
+        self.ghost=True
+
+
+    def show(self, can):
+        if not self.state:
+            if self.figure:
+                can.itemconfig(self.figure, fill=self.color, outline="white")
+            else:
+                self.figure=can.create_polygon(*self.polygon, outline="white", fill=self.color)
+        self.state=True
+
+    def hide(self, can):
+        if self.state:
+            if self.ghost:
+                can.itemconfig(self.figure, fill="", outline="grey")
+            else:
+                can.itemconfig(self.figure, fill="", outline="black")
+        self.state=False
+
+    def handle(self, cmd, can):
+        if self.cmd in cmd:
+            self.show(can)
+        elif self.offCmd in cmd:
+            self.hide(can)
+
 
 class Lumi:
     def __init__(self):
@@ -19,8 +54,8 @@ class Lumi:
         self.showModeBtn=Button(self.tk, text="Enter show mode", command=self.showMode)
         self.startRecordingBtn = Button(self.tk, text="Start recording", command=lambda: self.tk.bind("<FocusOut>", lambda e:self.startRecording()))
         Button(self.tk, text="Start lightzer", command=lambda: lightzer.init(self)).pack()
-        chazer.lumi=self
-        Button(self.tk, text="Start chazer", command=chazer.start).pack()
+        self.ghostifyBtn=Button(self.tk, text="UnGhostify polygons", command=self.ghostify)
+        self.ghostifyBtn.pack()
         self.startRecordingBtn.pack()
         self.channelsFrame=Frame(self.tk)
         self.loadDisplayBtn.pack()
@@ -42,9 +77,23 @@ class Lumi:
         self.channelsLabels=[]
         self.dots=[]
         self.recordData=[]
-        self.polygons={}
+        self.polygons=[]
         self.recording=False
         self.displayChannels()
+
+    def ghostify(self):
+        if self.polygons[0].ghost:
+            for polygon in self.polygons:
+                polygon.ghost=False
+                polygon.hide(self.prevCan)
+            self.ghostifyBtn.config(text="Ghostify polygons")
+        else:
+            for polygon in self.polygons:
+                polygon.ghost=True
+                polygon.hide(self.prevCan)
+            self.ghostifyBtn.config(text="UnGhostify polygons")
+
+
 
     def startRecording(self):
         print("start")
@@ -75,6 +124,8 @@ class Lumi:
                 return
         elif self.serial:
             self.serial.write(cmd.encode())
+        for polygon in self.polygons:
+            polygon.handle(cmd, self.prevCan)
 
     def triggerChannel(self, channel, state=True):
         if self.recording:
@@ -84,16 +135,8 @@ class Lumi:
             self.execCommand(self.channels[channel]["cmd"])
         else:
             self.execCommand(self.channels[channel]["offCmd"])
-        if state:
-            if channel in self.preview:
-                print("Drawing polygon")
-                if channel not in self.polygons:
-                    self.polygons[channel]=self.prevCan.create_polygon(*self.preview[channel], outline="white", fill="white")
-                else:
-                    self.prevCan.itemconfig(self.polygons[channel], fill="white")
-        else:
-            if channel in self.polygons:
-                self.prevCan.itemconfig(self.polygons[channel], fill="black", outline="grey")
+
+        
 
 
     def genChannelTrigger(self, channel, press=True):
@@ -124,10 +167,10 @@ class Lumi:
         self.prevCan.unbind("<Button-3>")
         self.prevCan.unbind("<Motion>")
         self.prevCan.bind("<Button-1>", self.beginPreviewPolygon)
-        channel=askstring("Bind polygon to channel - Lumi", "Enter the polygon's channel")
-        if channel not in self.preview:
-            self.preview[channel]=[]
-        self.preview[channel].append(self.dots)
+        cmd=askstring("Bind polygon to cmd - Lumi", "Enter the polygon's ON cmd")
+        offCmd = askstring("Bind polygon to cmd - Lumi", "Enter the polygon's OFF cmd")
+        color=askcolor()
+        self.polygons.append(Polygon(self.dots, cmd, offCmd, color[1]))
         self.dots=[]
         self.prevCan.itemconfig(self.polygon, fill="black", outline="grey")
 
@@ -201,11 +244,15 @@ class Lumi:
             filename=askopenfilename(master=self.tk, title="Load Display - Lumi", filetypes=[("Lumi displays", "*.lud"), ("All files", "*")])
             with open(filename, "rb") as file:
                 data=pickle.load(file)
+            if "polygons" not in data:
+                showerror("Error - Lumi", "The file you are trying to load is in the old lumi display format. It's not working with the new lumi version")
+                return
             self.channels=data["channels"]
             self.previewImgFile=data["previewImg"]
             if self.previewImgFile:
                 self.previewImg=PhotoImage(self.previewImgFile)
-            self.preview=data["preview"]
+
+            self.polygons=data["polygons"]
             self.displayChannels()
 
 
@@ -215,7 +262,7 @@ class Lumi:
         filename=asksaveasfilename(master=self.tk, title="Save Display - Lumi", filetypes=[("Lumi display", "*.lud")])
         if not filename.endswith(".lud"):
             filename+=".lud"
-        data={"channels" : self.channels, "previewImg" : self.previewImgFile, "preview" : self.preview}
+        data={"channels" : self.channels, "previewImg" : self.previewImgFile, "polygons" : self.polygons}
         with open(filename, "wb") as file:
             pickle.dump(data, file)
 
